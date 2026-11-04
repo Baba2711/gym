@@ -71,7 +71,10 @@ a.row,a.btn{color:inherit;text-decoration:none}
 .dhead .t{display:flex;align-items:center;gap:10px;min-width:0}
 .dhead h1{margin:0;font-size:24px}
 .dhead input{padding:6px 8px}
-.exhead{font-weight:600}
+.exhead{font-weight:600;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.xcard{transition:transform .15s ease}
+.xcard.dragging{transition:none;position:relative;z-index:6;box-shadow:0 10px 28px rgba(0,0,0,.4);outline:2px solid var(--accent)}
+body.dragmode{-webkit-user-select:none;user-select:none}
 .cnt{font-weight:500;font-size:14px;color:var(--muted);flex:0 0 auto} .cnt.full{color:var(--up)}
 .set{padding:10px 14px;border-top:1px solid var(--line)}
 .setline{display:flex;align-items:center;gap:10px}
@@ -559,11 +562,11 @@ function vSession(){
   const p=prog(draft.programId);
   const cards=draft.items.map((it,i)=>{
     const e=ex(it.exId), n=it.sets.length, done=it.sets.filter(s=>s.ok).length, open=draft.open===i;
-    return `<div class="card"><button class="row exhead" data-act="toggle" data-i="${i}"><span class="exl">${open?'':thumb(it.exId)}<span>${esc(e.name)}</span></span><span class="cnt ${done&&done===n?'full':''}">${done}/${n}</span></button>
+    return `<div class="card xcard" data-i="${i}"><button class="row exhead" data-act="toggle" data-i="${i}"><span class="exl">${open?'':thumb(it.exId)}<span>${esc(e.name)}</span></span><span class="cnt ${done&&done===n?'full':''}">${done}/${n}</span></button>
       ${open?`<button class="bigfig" data-act="info" data-id="${esc(it.exId)}" aria-label="How to do it">${bigFig(it.exId)}<span class="hint">ⓘ how to</span></button>`+it.sets.map((_,j)=>setRow(it,i,j)).join('')+`<div class="tools" style="padding-top:12px"><button data-act="addset" data-i="${i}">+ Set</button><button data-act="delset" data-i="${i}">− Set</button><button data-act="swap" data-i="${i}">Swap</button><button data-act="remove" data-i="${i}">Remove</button></div>`:''}</div>`;
   }).join('');
   return `<div class="dhead"><span class="t">${p?badge(p):''}<h1>${esc(p?ptitle(p).n:draft.name)}</h1></span><input type="date" value="${draft.date}" data-f="date"></div>
-    ${cards}<button class="btn" data-act="addex">+ Add exercise</button>
+    ${draft.items.length>1?'<p class="sub" style="margin:-4px 0 10px">Hold an exercise to drag it up or down</p>':''}${cards}<button class="btn" data-act="addex">+ Add exercise</button>
     <button class="btn primary" data-act="finish">Finish</button><button class="btn danger" data-act="discard">Discard</button>`;
 }
 
@@ -789,7 +792,57 @@ document.addEventListener('change',e=>{
   else if(f==='emuscle'){ex(t.dataset.id).muscle=t.value;save();render()}
   else if(f==='etype'){ex(t.dataset.id).type=t.value;save()}
 });
+/* ---------- long-press an exercise in a session, then drag it up or down ---------- */
+let drag=null, lp=null, swallowClick=false;
+function dragStart(card,y){
+  const cards=[...document.querySelectorAll('.xcard')];
+  drag={card,cards,from:+card.dataset.i,to:+card.dataset.i,y,y0:y+scrollY,
+    rects:cards.map(c=>{const r=c.getBoundingClientRect();return {top:r.top+scrollY,h:r.height}})};
+  card.classList.add('dragging');document.body.classList.add('dragmode');
+  if(navigator.vibrate)navigator.vibrate(15);
+  drag.timer=setInterval(()=>{ // auto-scroll when the finger is near the top or bottom
+    if(drag.y<90)scrollBy(0,-10);else if(drag.y>innerHeight-140)scrollBy(0,10);else return;
+    dragMove(drag.y);
+  },16);
+}
+function dragMove(y){
+  const d=drag; d.y=y;
+  const dy=y+scrollY-d.y0, me=d.rects[d.from], step=me.h+8, c=me.top+me.h/2+dy;
+  d.card.style.transform=`translateY(${dy}px)`;
+  let to=d.from;
+  d.rects.forEach((r,k)=>{if(k<d.from&&c<r.top+r.h/2)to=Math.min(to,k);if(k>d.from&&c>r.top+r.h/2)to=Math.max(to,k)});
+  d.to=to;
+  d.cards.forEach((el,k)=>{if(k===d.from)return;const s=k>d.from&&k<=to?-step:k<d.from&&k>=to?step:0;el.style.transform=s?`translateY(${s}px)`:''});
+}
+function dragEnd(){
+  const d=drag; drag=null; clearInterval(d.timer); document.body.classList.remove('dragmode');
+  swallowClick=true; setTimeout(()=>{swallowClick=false},400);
+  if(d.to!==d.from){
+    const open=draft.items[draft.open], [it]=draft.items.splice(d.from,1);
+    draft.items.splice(d.to,0,it); draft.open=draft.items.indexOf(open); saveDraft();
+  }
+  render();
+}
+function pressStart(e,x,y){
+  const h=e.target.closest('.exhead'); if(!h||!draft||drag)return;
+  lp={x,y,t:setTimeout(()=>{lp=null;dragStart(h.closest('.xcard'),y)},380)};
+}
+function pressMove(e,x,y){
+  if(drag){if(e.cancelable)e.preventDefault();dragMove(y);return}
+  if(lp&&Math.hypot(x-lp.x,y-lp.y)>10){clearTimeout(lp.t);lp=null} // moved first: it's a scroll
+}
+function pressEnd(){if(lp){clearTimeout(lp.t);lp=null}if(drag)dragEnd()}
+document.addEventListener('touchstart',e=>pressStart(e,e.touches[0].clientX,e.touches[0].clientY),{passive:true});
+document.addEventListener('touchmove',e=>pressMove(e,e.touches[0].clientX,e.touches[0].clientY),{passive:false});
+document.addEventListener('touchend',pressEnd);
+document.addEventListener('touchcancel',pressEnd);
+document.addEventListener('mousedown',e=>pressStart(e,e.clientX,e.clientY));
+document.addEventListener('mousemove',e=>pressMove(e,e.clientX,e.clientY));
+document.addEventListener('mouseup',pressEnd);
+document.addEventListener('contextmenu',e=>{if(e.target.closest('.exhead'))e.preventDefault()});
+
 document.addEventListener('click',e=>{
+  if(swallowClick&&e.target.closest('.exhead')){swallowClick=false;return}
   const b=e.target.closest('[data-act]'); if(!b)return;
   const a=b.dataset.act,i=+b.dataset.i,id=b.dataset.id;
   if(a==='closepick'){if(e.target===b)closePick();return}
